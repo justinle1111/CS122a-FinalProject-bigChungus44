@@ -1,148 +1,319 @@
 import sys
-from services.import_data import import_data
-from services.insert_agent_client import insertAgentClient
-from services.add_customized_model import addCustomizedModel
-from services.delete_base_model import deleteBaseModel
-from services.list_internet_service import listInternetService
-from services.count_customized_model import countCustomizedModel
-from services.top_n_duration_config import topNDurationConfig
-from services.list_base_model_keyword import listBaseModelKeyword
+import os
+import csv
+import mysql.connector
 
 
+# ---------------------------------------------------------
+# DATABASE CONNECTION
+# ---------------------------------------------------------
+def get_connection():
+    return mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="",  # <-- PUT YOUR PASSWORD HERE
+        database="cs122a"
+    )
+
+
+# ---------------------------------------------------------
+# 1. IMPORT DATA
+# ---------------------------------------------------------
+def import_data(folder_name: str) -> bool:
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # Load schema.sql
+        schema_path = os.path.join("ddl", "schema.sql")
+        with open(schema_path, "r") as f:
+            schema_sql = f.read()
+
+        # Execute schema (drop & recreate tables)
+        for _ in cursor.execute(schema_sql, multi=True):
+            pass
+
+        folder_path = folder_name
+
+        # Import CSVs alphabetically
+        for filename in sorted(os.listdir(folder_path)):
+            if not filename.endswith(".csv"):
+                continue
+
+            table_name = filename[:-4]
+            file_path = os.path.join(folder_path, filename)
+
+            with open(file_path, newline='') as csvfile:
+                reader = csv.reader(csvfile)
+                header = next(reader)
+
+                placeholders = ", ".join(["%s"] * len(header))
+                sql = f"INSERT INTO {table_name} VALUES ({placeholders})"
+
+                for row in reader:
+                    cursor.execute(sql, row)
+
+        conn.commit()
+        return True
+
+    except Exception as e:
+        print("ERROR:", e)
+        conn.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------------
+# 2. INSERT AGENT CLIENT
+# ---------------------------------------------------------
+def insertAgentClient(uid, username, email, card_no, card_holder, expire, cvv, zip_code, interests):
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # Insert into User
+        cursor.execute(
+            "INSERT INTO User (uid, email, username) VALUES (%s, %s, %s)",
+            (uid, email, username)
+        )
+
+        # Insert into AgentClient
+        cursor.execute(
+            """INSERT INTO AgentClient (uid, interests, cardholder, expire, cardno, cvv, zip)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (uid, interests, card_holder, expire, card_no, cvv, zip_code)
+        )
+
+        conn.commit()
+        return True
+
+    except Exception:
+        conn.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------------
+# 3. ADD CUSTOMIZED MODEL
+# ---------------------------------------------------------
+def addCustomizedModel(mid, bmid):
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "INSERT INTO CustomizedModel (bmid, mid) VALUES (%s, %s)",
+            (bmid, mid)
+        )
+
+        conn.commit()
+        return True
+
+    except Exception:
+        conn.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------------
+# 4. DELETE BASE MODEL
+# ---------------------------------------------------------
+def deleteBaseModel(bmid):
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("DELETE FROM BaseModel WHERE bmid = %s", (bmid,))
+
+        conn.commit()
+        return cursor.rowcount > 0
+
+    except Exception:
+        conn.rollback()
+        return False
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------------
+# 5. LIST INTERNET SERVICE
+# ---------------------------------------------------------
+def listInternetService(bmid):
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        sql = """
+            SELECT I.sid, I.endpoints, I.provider
+            FROM InternetService I
+            JOIN ModelServices M ON I.sid = M.sid
+            WHERE M.bmid = %s
+            ORDER BY I.provider ASC
+        """
+
+        cursor.execute(sql, (bmid,))
+        for row in cursor.fetchall():
+            print(",".join(str(x) for x in row))
+
+        return True
+
+    except Exception:
+        return False
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------------
+# 6. COUNT CUSTOMIZED MODEL
+# ---------------------------------------------------------
+def countCustomizedModel(bmid_list):
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        for bmid in sorted(bmid_list, key=lambda x: int(x)):
+            sql = """
+                SELECT B.bmid, B.description, COUNT(C.mid)
+                FROM BaseModel B
+                LEFT JOIN CustomizedModel C ON B.bmid = C.bmid
+                WHERE B.bmid = %s
+            """
+            cursor.execute(sql, (bmid,))
+            row = cursor.fetchone()
+            print(",".join(str(x) for x in row))
+
+        return True
+
+    except Exception:
+        return False
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------------
+# 7. TOP N DURATION CONFIG
+# ---------------------------------------------------------
+def topNDurationConfig(uid, N):
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        sql = """
+            SELECT C.client_uid, MC.cid, C.labels, C.content, MC.duration
+            FROM Configuration C
+            JOIN ModelConfigurations MC ON C.cid = MC.cid
+            WHERE C.client_uid = %s
+            ORDER BY MC.duration DESC
+            LIMIT %s
+        """
+
+        cursor.execute(sql, (uid, N))
+
+        for row in cursor.fetchall():
+            print(",".join(str(x) for x in row))
+
+        return True
+
+    except Exception:
+        return False
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------------
+# 8. LIST BASE MODEL KEYWORD
+# ---------------------------------------------------------
+def listBaseModelKeyword(keyword):
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        sql = """
+            SELECT DISTINCT B.bmid, I.sid, I.provider, L.domain
+            FROM BaseModel B
+            JOIN ModelServices MS ON B.bmid = MS.bmid
+            JOIN InternetService I ON MS.sid = I.sid
+            JOIN LLMService L ON I.sid = L.sid
+            WHERE L.domain LIKE %s
+            ORDER BY B.bmid ASC
+            LIMIT 5
+        """
+
+        cursor.execute(sql, ("%" + keyword + "%",))
+
+        for row in cursor.fetchall():
+            print(",".join(str(x) for x in row))
+
+        return True
+
+    except Exception:
+        return False
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------------
+# COMMAND ROUTER
+# ---------------------------------------------------------
 def main():
     if len(sys.argv) < 2:
         print("Fail")
         return
 
-    command = sys.argv[1]
+    cmd = sys.argv[1]
 
-    # ------------------------------
-    # 1. IMPORT DATA
-    # ------------------------------
-    if command == "import":
-        if len(sys.argv) != 3:
-            print("Fail")
-            return
-        result = import_data(sys.argv[2])
-        print("Success" if result else "Fail")
-        return
+    if cmd == "import":
+        print("Success" if import_data(sys.argv[2]) else "Fail")
 
-    # ------------------------------
-    # 2. INSERT AGENT CLIENT
-    # python3 project.py insertAgentClient uid username email card_number card_holder expiration cvv zip interests
-    # ------------------------------
-    if command == "insertAgentClient":
-        if len(sys.argv) != 11:
-            print("Fail")
-            return
-        
-        uid = sys.argv[2]
-        username = sys.argv[3]
-        email = sys.argv[4]
-        card_number = sys.argv[5]
-        card_holder = sys.argv[6]
-        expiration_date = sys.argv[7]
-        cvv = sys.argv[8]
-        zip_code = sys.argv[9]
-        interests = sys.argv[10]
+    elif cmd == "insertAgentClient":
+        ok = insertAgentClient(*sys.argv[2:11])
+        print("Success" if ok else "Fail")
 
-        result = insertAgentClient(uid, username, email, card_number,
-                                   card_holder, expiration_date, cvv,
-                                   zip_code, interests)
-        print("Success" if result else "Fail")
-        return
+    elif cmd == "addCustomizedModel":
+        ok = addCustomizedModel(sys.argv[2], sys.argv[3])
+        print("Success" if ok else "Fail")
 
-    # ------------------------------
-    # 3. ADD CUSTOMIZED MODEL
-    # python3 project.py addCustomizedModel mid bmid
-    # ------------------------------
-    if command == "addCustomizedModel":
-        if len(sys.argv) != 4:
-            print("Fail")
-            return
+    elif cmd == "deleteBaseModel":
+        ok = deleteBaseModel(sys.argv[2])
+        print("Success" if ok else "Fail")
 
-        mid = sys.argv[2]
-        bmid = sys.argv[3]
+    elif cmd == "listInternetService":
+        ok = listInternetService(sys.argv[2])
+        print("Success" if ok else "Fail")
 
-        result = addCustomizedModel(mid, bmid)
-        print("Success" if result else "Fail")
-        return
+    elif cmd == "countCustomizedModel":
+        ok = countCustomizedModel(sys.argv[2:])
+        print("Success" if ok else "Fail")
 
-    # ------------------------------
-    # 4. DELETE BASE MODEL
-    # python3 project.py deleteBaseModel bmid
-    # ------------------------------
-    if command == "deleteBaseModel":
-        if len(sys.argv) != 4:
-            print("Fail")
-            return
+    elif cmd == "topNDurationConfig":
+        ok = topNDurationConfig(sys.argv[2], sys.argv[3])
+        print("Success" if ok else "Fail")
 
-        bmid = sys.argv[2]
-        result = deleteBaseModel(bmid)
-        print("Success" if result else "Fail")
-        return
+    elif cmd == "listBaseModelKeyWord":
+        ok = listBaseModelKeyword(sys.argv[2])
+        print("Success" if ok else "Fail")
 
-    # ------------------------------
-    # 5. LIST INTERNET SERVICE
-    # python3 project.py listInternetService bmid
-    # ------------------------------
-    if command == "listInternetService":
-        if len(sys.argv) != 3:
-            print("Fail")
-            return
-
-        bmid = sys.argv[2]
-        result = listInternetService(bmid)
-        print("Success" if result else "Fail")
-        return
-
-    # ------------------------------
-    # 6. COUNT CUSTOMIZED MODEL
-    # python3 project.py countCustomizedModel bmid1 bmid2 bmid3 ...
-    # ------------------------------
-    if command == "countCustomizedModel":
-        if len(sys.argv) < 3:
-            print("Fail")
-            return
-
-        bmid_list = sys.argv[2:]
-        result = countCustomizedModel(bmid_list)
-        print("Success" if result else "Fail")
-        return
-
-    # ------------------------------
-    # 7. TOP N DURATION CONFIG
-    # python3 project.py topNDurationConfig uid N
-    # ------------------------------
-    if command == "topNDurationConfig":
-        if len(sys.argv) != 4:
-            print("Fail")
-            return
-
-        uid = sys.argv[2]
-        N = sys.argv[3]
-        result = topNDurationConfig(uid, N)
-        print("Success" if result else "Fail")
-        return
-
-    # ------------------------------
-    # 8. LIST BASE MODEL KEYWORD
-    # python3 project.py listBaseModelKeyword keyword
-    # ------------------------------
-    if command == "listBaseModelKeyWord":
-        if len(sys.argv) != 3:
-            print("Fail")
-            return
-
-        keyword = sys.argv[2]
-        result = listBaseModelKeyword(keyword)
-        print("Success" if result else "Fail")
-        return
-
-    # ------------------------------
-    # INVALID COMMAND
-    # ------------------------------
-    print("Fail")
+    else:
+        print("Fail")
 
 
 if __name__ == "__main__":
